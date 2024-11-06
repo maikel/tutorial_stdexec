@@ -440,7 +440,7 @@ private:
   struct operation_base {
     void (*set_value_)(void* self) noexcept;
     operation_type type_;
-    bool stop_requested_;
+    bool run_loop_stopped_;
   };
 
   struct timer_op_base : operation_base {
@@ -471,20 +471,30 @@ As the first step of the run method we install a stop-callback, which sets our s
 ```cpp
 template <stdexec::stoppable_token StopToken>
 auto timed_run_loop::run(StopToken stop_token) -> void {
-  // First, we create a callback to set the boolean flag to true
-  // once a stop request was made for the run loop
-  struct on_stop {
-    timed_run_loop* self;
-    void operator()() const noexcept {
-      {
-        std::lock_guard lock{self->mutex_};
-        self->stop_requested_ = true;
-      }
-      self->cv_.notify_one();
+    // as long as this is false the run method will wait for work even if
+    // the it doesn't process any work.
+    // once this boolean is true run() will return as soon as all queues
+    // get empty
+    bool stop_requested{false};
+
+    // First, we create a callback to set the boolean flag to true
+    // once a stop request was made
+    struct on_stop {
+        timed_run_loop* self;
+        bool& stopped;
+
+        void operator()() const noexcept try {
+            {
+                std::lock_guard lock{self->mutex_};
+                stopped = true;
+            }
+            self->cv_.notify_one();
+        } catch (...) {
+        }
     };
-  };
-  using CallbackT = typename StopToken::template callback_type<on_stop>;
-  CallbackT callback(stop_token, on_stop{this});
+
+    using CallbackT = typename StopToken::template callback_type<on_stop>;
+    CallbackT callback(stop_token, on_stop{this, stop_requested});
 ```
 
 After installing the callback we enter a while loop that drives the progress.
@@ -557,21 +567,21 @@ The next stop of the event loop is to enter the critical section and to decide w
             continue;
         }
         // no new submission... lets see whether we need to wait or quit
-        if (stop_requested_ && timers.empty()) {
+        if (stop_requested && timers.empty()) {
             // stop requested and no timers to wait for? Let's quit.
             return;
-        } else if (stop_requested_ && !timers.empty()) {
+        } else if (stop_requested && !timers.empty()) {
             // stop requested and we need to cancel all the remaining timers
             while (!timers.empty()) {
                 auto next = timers.top();
                 timers.pop();
-                next.pointer_->stop_requested_ = true;
+                next.pointer_->run_loop_stopped_ = true;
                 next.pointer_->set_value_(next.pointer_);
             }
-        } else if (!stop_requested_ && timers.empty()) {
+        } else if (!stop_requested && timers.empty()) {
             // no stop but there are no timers? Let's wait.
             cv_.wait(lock);
-        } else if (!stop_requested_ && !timers.empty()) {
+        } else if (!stop_requested && !timers.empty()) {
             // timers available? Let's wait for the next deadline.
             auto deadline = timers.top().pointer_->deadline_;
             cv_.wait_until(lock, deadline);
@@ -823,7 +833,7 @@ struct operation : timed_run_loop::timer_op_base {
         if (self->cancellation_.op_count_ == 0) {
             // op_count_ hits zero, we are responsible for completing the
             // whole operation
-            if (self->stop_requested_) {
+            if (self->run_loop_stopped_) {
                 stdexec::set_stopped(
                     std::move(self->cancellation_.receiver_));
             } else {
