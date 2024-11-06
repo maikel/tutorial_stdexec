@@ -322,7 +322,8 @@ Stoppable tokens usually refer to some stop source and they give us the ability 
 That stop request, and the following invocation of the callback, can happen from an arbitrary thread.
 In practise it means that cancellation is racy and needs some extra care.
 
-The best property of stoppable tokens is the requirement that the invocation of a stop callback does not race with its destruction, i.e. destroying a callback object synchronizes with a concurrent invocation of the itself. This property can be used in implementing cancellation.
+The best property of stoppable tokens is the requirement that the invocation of a stop callback does not race with its destruction, i.e. destroying a callback object synchronizes with a concurrent invocation of the callback.
+This property can be used in implementing cancellation.
 
 In the following snippet, we will replace the call to `std::this_thread::sleep_until` with a call to `std::condition_variable::wait_until` that we interrupt from a callback whenever a stop is requested.
 
