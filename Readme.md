@@ -163,7 +163,7 @@ To achieve this, it introduces the notion of a scheduler, which is a handle to s
 A scheduler provides a schedule member method that returns a sender, which completes on the execution resource to which the scheduler refers.
 Furthermore, the schedule-sender must provide the query `stdexec::get_completion_scheduler<stdexec::set_value_t>` and return a scheduler object for the targeted execution context.
 
-This time, let’s create a very simple scheduler that creates a new thread each time it
+This time, let’s create a very simple scheduler that creates a new thread each time it starts a new operation
 
 ```cpp
 // This scheduler doesn't really point to any real context
