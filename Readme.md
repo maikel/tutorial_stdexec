@@ -859,9 +859,9 @@ struct operation : timed_run_loop::timer_op_base {
 };
 ```
 
-And this concludes our implementation to cancel timers on this single-threded execution context.
+This concludes our implementation of cancellable timers for the single-threaded execution context.
 Although this is much code to cope with I wanted to share this specific idiom for cancellation because it tremendously helped me out in many occasions once I knew of it.
-It also teaches many quirks about that involved types from `std::execution`.
+It also teaches many quirks about the involved types from `std::execution`.
 
 After putting that much effort into this, we also want to put this into action.
 Let's start with an example that uses only the `timed_run_loop`.
