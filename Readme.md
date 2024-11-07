@@ -318,7 +318,7 @@ In the case where the input sender completes in-time we need to stop the timer o
 
 ## Cancellation with Stoppable Tokens
 
-Although we have `std::stop_token` available since C++20, `std::execution` generalizes this concept to accommodate more token types, such as std::never_stop_token, which never triggers a stop request. Stoppable tokens typically refer to a stop source and allow us to install a callback that is invoked whenever a cancellation is requested. This stop request, along with the subsequent invocation of the callback, can occur from any thread, making cancellation inherently racy and requiring extra caution.
+Although we have `std::stop_token` available since C++20, `std::execution` generalizes this concept to accommodate more token types, such as `std::never_stop_token`, which never triggers a stop request. Stoppable tokens typically refer to a stop source and allow us to install a callback that is invoked whenever a cancellation is requested. This stop request, along with the subsequent invocation of the callback, can occur from any thread, making cancellation inherently racy and requiring extra caution.
 
 One of the key advantages of stoppable tokens is the guarantee that the invocation of a stop callback does not race with its destruction. Specifically, destroying a callback object synchronizes with any concurrent invocation of the callback. This property is essential for implementing cancellation.
 
