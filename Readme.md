@@ -307,12 +307,13 @@ The above example now allows us to schedule work that actually takes some time t
 While it may seem basic, there is a family of time-related algorithms—like setting timeouts for other operations where the notion of a `timed_scheduler` helps us to implement them.
 
 Let's consider for a moment a generic timeout algorithm that takes any input sender and a timeout duration and it will complete with a timeout error if the timer expires before the input sender can complete.
-This algorithm will have two child operations:
+The generic version of algorithm will have two child operations:
 
 1. the operation associated with the input sender
-2. another timer operation
-  
-In the case where the input sender completes in-time we need to stop the second operation early. Remember, that we embrace structured concurrency and we need to wait for all child operations to complete before we can complete the whole timeout operation.
+2. and another timer operation
+
+When one of the two operations complete a stop request for the second operation will be made.
+In the case where the input sender completes in-time we need to stop the timer operation early. Remember, that we embrace structured concurrency and we need to wait for all child operations to complete before we can complete the whole timeout operation.
 
 
 ## Cancellation with Stoppable Tokens
@@ -393,7 +394,7 @@ Once one sender completes it issues a stop request for all the others and waits 
 
 Concluding the last example, we implemented basic timers with the capability to cancel them once they have been started.
 Cancellation is implemented via a stop-callback that merely notifies the async operation to take a faster completion path.
-Sometimes it is possible to do *synchronous cancellation* where an operation will be completed when the stop-callback returns.
+Sometimes it is possible to do *synchronous cancellation* where an operation will be completed before the stop-callback returns.
 In my experience, it is hard to make synchronous cancellation correct and I try to avoid it.
 
 The next section focuses on getting rid of all the threads that we are starting and we implement an execution context that multiplexes multiple operations in one driving thread.
@@ -423,7 +424,9 @@ that has two public member methods:
 
 2. `scheduler()` to access a scheduler object which can be used to post operations on this event loop
 
-The implementation of our run loop uses one submission queue that contains pointers to operation states. Note that, once started, operation states are required to be immovable and their lifetime is maintained until any completion function of the connected receiver is called. Thus, it is safe to hold and access pointers to operation states until they have been completed.
+The implementation of our run loop uses one submission queue that contains pointers to operation states. 
+Note that, once started, operation states are required to be immovable and their lifetime is maintained until any completion function of the connected receiver is called.
+Thus, it is safe to hold and access pointers to operation states until they have been completed.
 The submission queue is shared with every thread that schedules work onto the execution context and we simply synchronize the access with a mutex.
 
 Within the run method, we allocate a local timer queue using a priority queue that is only accessed by the thread that drives the context.
@@ -542,17 +545,17 @@ We will address that after completing our first implementation.
 After processing the submission queue we also have to check in each iteration whether some pending timers are now ready to be completed.
 
 ```cpp
-    // After we emptied the submission queue we check whether any ready
-    // timers are waiting for its completion in the timer queue
-    while (!timers.empty()) {
-      timer_op_handle next = timers.top();
-      if (next.pointer_->deadline_ <= now) {
-        timers.pop();
-        next.pointer_->set_value_(next.pointer_);
-      } else {
-        break;
-      }
-    }
+        // After we emptied the submission queue we check whether any ready
+        // timers are waiting for its completion in the timer queue
+        while (!timers.empty()) {
+            timer_op_handle next = timers.top();
+            if (next.pointer_->deadline_ <= now) {
+                timers.pop();
+                next.pointer_->set_value_(next.pointer_);
+            } else {
+                break;
+            }
+        }
 ```
 
 This completes the local work that our multiplexer needs to do.
@@ -741,7 +744,7 @@ class timed_run_loop_scheduler {
 
 I think cancellation is the most interesting and most difficult aspect of the implementation.
 Upon an incoming stop request a stop-callback will schedule another cancellation operation to the submission queue of the context.
-If this happens the whole schedule-operation needs to wait for both submissions, timer and its cancellation, to complete before it completes itself via the connected receiver.
+If this happens the whole schedule-operation will wait for both submissions, timer and its cancellation, to complete before it completes itself via the connected receiver.
 In fact, our implementation guarantees that the cancellation operation completes last as long as there is only one driving thread.
 I want to make this assumption here and leave it as an exercise to generalize cancellation to support multiple driving threads.
 
@@ -943,7 +946,17 @@ auto async_main(timed_run_loop_scheduler scheduler) -> stdexec::sender auto {
 
 [Link to godbolt](https://godbolt.org/z/MEEvvjrv5)
 
-If anyone who reads this wants go further from here you could go and make the next step towards your custom `io_run_loop`. 
-To do this one could replace the condition variable with a call to `::poll`, or something similar, with the appropiate deadline.
-The cancellation logic for operations on file descriptors follows basically the same pattern.
-A good exercise is also to wrap existing io multiplexer such as Boost.asio, libevent, Glib, Qt, etc...
+Finally, I want to make some notes.
+There are many ways to implement cancellation for an event loop like this.
+I also prepared a version, where the cancellation is not an operation that can be completed like presented.
+You can make it a simple command for the driving thread instead.
+The upside of making cancellation a command versus being a completable operation is that the timer operation doesn't need to wait for the completion of both, timer operation and stop command.
+The downside of that strategy is that there is potentially some left-over command in the run loop after the timer has been completed.
+[I prepared that solution here](https://godbolt.org/z/jGx8qab5o) but decided to present you with the solution above.
+
+For anyone who wants to go further from here, you could take the next step towards your custom `io_run_loop`. 
+To do this, replace the condition variable with a call to `::poll` or something similar and put the appropriate deadline there.
+The cancellation logic for operations on file descriptors follows the same patterns.
+A good exercise is also to wrap an existing IO multiplexer such as Boost.asio, libevent, Glib, Qt, etc.
+
+The article ends here. The next article will be a walkthrough about creating your own *sender adaptors*.
