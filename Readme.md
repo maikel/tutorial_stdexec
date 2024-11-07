@@ -307,7 +307,7 @@ The above example now allows us to schedule work that actually takes some time t
 While it may seem basic, there is a family of time-related algorithms—like setting timeouts for other operations where the notion of a `timed_scheduler` helps us to implement them.
 
 Let's consider for a moment a generic timeout algorithm that takes any input sender and a timeout duration and it will complete with a timeout error if the timer expires before the input sender can complete.
-The generic version of algorithm will have two child operations:
+The generic version of the algorithm will have two child operations:
 
 1. the operation associated with the input sender
 2. and another timer operation
