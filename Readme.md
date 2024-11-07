@@ -531,10 +531,10 @@ The first step in each event loop iteration is to process the submission queue a
 ```
 
 We do this on a local copy of the submission queue because I don't want to lock the mutex while the queue is being processed.
-It is especially a bad idea to lock the mutex when you complete any operations because those completions might want to submit follow up tasks or issue a stop request, which would easily deadlock.
+It is especially a bad idea to lock the mutex when you complete any operations because those completions might want to submit follow-up tasks or issue a stop request, which would easily be deadlocked.
 
 
-`std::priority_queue` does not support the removal single elements from the middle of the queue and thus we have to implement our own queue data structure.
+`std::priority_queue` does not support the removal of single elements from the middle of the queue and thus we have to implement a custom queue data structure.
 We will address that after completing our first implementation.
 
 After processing the submission queue we also have to check in each iteration whether some pending timers are now ready to be completed.
