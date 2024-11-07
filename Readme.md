@@ -318,16 +318,11 @@ In the case where the input sender completes in-time we need to stop the timer o
 
 ## Cancellation with Stoppable Tokens
 
-Although we have `std::stop_token` in our toolbox since C++20, `std::execution` generalizes this to a concept to allow more token types such as `std::never_stop_token`, which never triggers a stop request.
-Stoppable tokens usually refer to some stop source and they give us the ability to install a callback that is invoked whenever a cancellation is requested.
-That stop request, and the following invocation of the callback, can happen from an arbitrary thread.
-In practise it means that cancellation is racy and needs some extra care.
+Although we have `std::stop_token` available since C++20, `std::execution` generalizes this concept to accommodate more token types, such as std::never_stop_token, which never triggers a stop request. Stoppable tokens typically refer to a stop source and allow us to install a callback that is invoked whenever a cancellation is requested. This stop request, along with the subsequent invocation of the callback, can occur from any thread, making cancellation inherently racy and requiring extra caution.
 
-The best property of stoppable tokens is the requirement that the invocation of a stop callback does not race with its destruction, i.e. destroying a callback object synchronizes with a concurrent invocation of the callback.
-This property can be used in implementing cancellation.
+One of the key advantages of stoppable tokens is the guarantee that the invocation of a stop callback does not race with its destruction. Specifically, destroying a callback object synchronizes with any concurrent invocation of the callback. This property is essential for implementing cancellation.
 
-In the following snippet, we will replace the call to `std::this_thread::sleep_until` with a call to `std::condition_variable::wait_until` that we interrupt from a callback whenever a stop is requested.
-
+In the following snippet, we will replace the call to `std::this_thread::sleep_until` with a call to `std::condition_variable::wait_until`, which we will interrupt from a callback whenever a stop request is received.
 
 ```cpp
 template <class Receiver>
