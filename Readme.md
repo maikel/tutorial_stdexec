@@ -340,11 +340,13 @@ struct timed_operation {
 
     struct on_stop {
         timed_operation* self;
-        void operator()() const noexcept {
+        void operator()() const noexcept try {
             {
                 std::lock_guard lock{self->mutex_};
             }
             self->cv_.notify_one();
+        } catch (...) {
+            // failed to lock the mutex. ignore stop request
         }
     };
 
@@ -362,15 +364,20 @@ struct timed_operation {
             stdexec::get_stop_token(stdexec::get_env(receiver_));
         stop_callback_.emplace(stop_token, on_stop{this});
         thread_ = std::jthread([this, stop_token] {
-            std::unique_lock lock{mutex_};
-            bool stop_requested = cv_.wait_until(
-                lock, deadline_,
-                [stop_token] { return stop_token.stop_requested(); });
-            lock.unlock();
-            if (stop_requested) {
-                stdexec::set_stopped(std::move(receiver_));
-            } else {
-                stdexec::set_value(std::move(receiver_));
+            try {
+                std::unique_lock lock{mutex_};
+                bool stop_requested = cv_.wait_until(
+                    lock, deadline_,
+                    [stop_token] { return stop_token.stop_requested(); });
+                lock.unlock();
+                if (stop_requested) {
+                    stdexec::set_stopped(std::move(receiver_));
+                } else {
+                    stdexec::set_value(std::move(receiver_));
+                }
+            } catch (...) {
+                stdexec::set_error(std::move(receiver_),
+                                    std::current_exception());
             }
         });
     } catch (...) {
@@ -380,7 +387,7 @@ struct timed_operation {
 
 ```
 
-[Link to godbolt](https://godbolt.org/z/fobxETPWe)
+[Link to godbolt](https://godbolt.org/z/Pjsraz1b5)
 
 I encourage you to try the godbolt link and play around with this scheduler.
 The example in the godbolt link uses an algorithm that is not standardized but implemented in stdexec: `exec::when_any(senders...)`.
