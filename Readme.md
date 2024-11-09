@@ -27,7 +27,7 @@ To create a sender, you basically have to do two things:
 1. Given a receiver type, define an operation state that is used to start the completion of the operation.
 2. Describe the set of all possible completions that your operation state may potentially complete with. This set might depend on an *environment* type.
 
-The second bullet point indicates that there is often some meta-programming involved if you are the author of a sender adaptor algorithm because you have to make type transformations that match your implementation.
+The second point implies that there is often some meta-programming involved if you are the author of a sender adaptor algorithm because you have to make type transformations that match your implementation.
 
 Let’s start with a simple example by defining a sender that completes with the integer value 42.
 
@@ -49,7 +49,7 @@ struct just_42_operation_state {
 };
 
 // Here we define the sender, the description of work
-struct just_42_t {
+struct just_42_sender {
  // This tag is used to tell the sender CPOs that our member methods
  // are allowed to be used by them
   using sender_concept = stdexec::sender_t;
@@ -73,13 +73,13 @@ struct just_42_t {
 
 int main()
 {
-    just_42_t just{};
+    just_42_sender just{};
     auto [value] = stdexec::sync_wait(just).value();
     return value;
 }
 ```
 
-[Link to godbolt](https://godbolt.org/z/eq76dexdr)
+[Link to godbolt](https://godbolt.org/z/9KTf43P4K)
 
 Providing a type list (`stdexec::completion_signatures<[...]>`) as a sender is necessary for some algorithms that, for example, want to store the completion results of an operation. 
 Ideally, one would like to make those signatures depend on a receiver's type to access the complete type information available when we want to describe all the possible signatures of a concrete operation state.
@@ -105,7 +105,7 @@ auto was_stopped = stdexec::then(std::get_stop_token(), [](auto token) {
 
 We will utilize this later in the article.
 
-The sender `just_42_t` is a fully-fledged `std::execution` sender and can be employed with all algorithms from `std::execution`.
+The sender `just_42_sender` is a fully-fledged `std::execution` sender and can be employed with all algorithms from `std::execution`.
 The godbolt example uses the `sync_wait` algorithm, which connects the input sender with a receiver, starts the resulting operation, and blockingly waits for its completion.
 The `sync_wait` algorithm does even more: it provides a scheduler via the receiver's environment, which can be used to post additional work if needed.
 The scheduler provided by `sync_wait` uses the calling thread as an execution resource.
@@ -131,7 +131,7 @@ struct just_int_receiver {
 
 int main()
 {
-    just_42_t just{};
+    just_42_sender just{};
     int value = 0;
     // here we connect a sender and a receiver and make an operation state
     auto op = stdexec::connect(just, just_int_receiver{value});
@@ -141,7 +141,7 @@ int main()
     return value;
 }
 ```
-[Link to godbolt](https://godbolt.org/z/crqr5dG8K)
+[Link to godbolt](https://godbolt.org/z/Mna5T4a9T)
 
 `just_int_receiver` is inadequate for general use.
 It does not synchronize the completion value with the current thread in any way, and the above example works only because we know that the resulting operation state `op` completes inline when we call the operation's start method. However, we are utilizing all the information available to us, which is beneficial! This (unrealistic) example compiles to:
@@ -221,7 +221,7 @@ struct jthread_scheduler {
 };
 ```
 
-[Link to godbolt](https://godbolt.org/z/7Ynbqcdv6)
+[Link to godbolt](https://godbolt.org/z/746fdz981)
 
 This example serves an educational purpose, but launching separate threads for each work item is rarely useful in practice.
 Instead, you typically have some kind of multiplexer that interleaves the execution of multiple operations, and we will explore that next.
@@ -411,7 +411,7 @@ public:
   friend class timed_run_loop_scheduler;
 
   template <stdexec::stoppable_token StopToken>
-  auto run(StopToken stop_token) -> void;
+  auto run(StopToken stop_token) noexcept -> void;
 
   auto scheduler() noexcept -> timed_run_loop_scheduler;
 
@@ -431,44 +431,44 @@ Note that, once started, operation states are required to be immovable and their
 Thus, it is safe to hold and access pointers to operation states until they have been completed.
 The submission queue is shared with every thread that schedules work onto the execution context and we simply synchronize the access with a mutex.
 
-Within the run method, we allocate a local timer queue using a priority queue that is only accessed by the thread that drives the context.
+Within the run method, we allocate a local timer queue that is only accessed by the thread that drives the context.
 
 
 ```cpp
 class timed_run_loop {
-public:
-  // [...]
-private:
-  enum class operation_type {
-    timer, cancel
-  };
+  public:
+    // [...]
+  private:
+    struct timer_base {
+        explicit timer_base(std::chrono::system_clock::time_point deadline) noexcept
+            : deadline_{deadline} {}
 
-  struct operation_base {
-    void (*set_value_)(void* self) noexcept;
-    operation_type type_;
-    bool run_loop_stopped_;
-  };
+        virtual void set_value() noexcept = 0;
+        virtual void set_error(std::exception_ptr err) noexcept = 0;
+        virtual void set_stopped() noexcept = 0;
 
-  struct timer_op_base : operation_base {
-    std::chrono::system_clock::time_point deadline_;
-  };
+        std::chrono::system_clock::time_point deadline_;
 
-  struct cancellation_op_base : operation_base {
-    timer_op_base* target;
-  };
+      protected:
+        ~timer_base() = default;
+    };
 
-  // this mutex is used to synchronize with all remote threads
-  std::mutex mutex_;
-  // the condition variable will be used to wait for events to happen
-  std::condition_variable cv_;
-  // A queue for newly scheduled operations, written to by remote threads
-  // and emptied by the driving thread
-  std::vector<operation_base*> submission_queue_;
+    struct stop_request {
+        timer_base* target;
+    };
+
+    // this mutex is used to synchronize with all remote threads
+    std::mutex mutex_{};
+    // the condition variable will be used to wait for events to happen
+    std::condition_variable cv_{};
+    // A queue for newly scheduled operations, written to by remote threads
+    // and emptied by driving threads
+    std::vector<std::variant<timer_base*, stop_request>> submission_queue_{};
 };
 ```
 
-Note, how we type-erase two different types of operations in the submission queue.
-Since the timer queue is local to the driving thread, we implement cancellation by submitting an operation of type `operation_type::cancel` to the queue.
+Note, how we type-erase two different types of submissions in the submission queue.
+Since the timer queue is local to the driving thread, we implement cancellation by submitting a command of type `timed_run_loop::stop_request` to the queue.
 The driving thread will then remove the target from its local time queue, if possible. 
 This leads, again, to an asynchronous cancellation scheme.
 
@@ -476,11 +476,11 @@ As the first step of the run method we install a stop-callback, which sets our s
 
 ```cpp
 template <stdexec::stoppable_token StopToken>
-auto timed_run_loop::run(StopToken stop_token) -> void {
+auto timed_run_loop::run(StopToken stop_token) noexcept -> void {
     // as long as this is false the run method will wait for work even if
     // the it doesn't process any work.
-    // once this boolean is true run() will return as soon as all queues
-    // get empty
+    // once this boolean is true run() will return as soon as possible
+    // all submitted work should be done before you do this
     bool stop_requested{false};
 
     // First, we create a callback to set the boolean flag to true
@@ -489,13 +489,13 @@ auto timed_run_loop::run(StopToken stop_token) -> void {
         timed_run_loop* self;
         bool& stopped;
 
-        void operator()() const noexcept try {
+        void operator()() const noexcept {
             {
+                // if this throws I want to terminate the program
                 std::lock_guard lock{self->mutex_};
                 stopped = true;
             }
             self->cv_.notify_one();
-        } catch (...) {
         }
     };
 
@@ -517,21 +517,23 @@ The first step in each event loop iteration is to process the submission queue a
     std::priority_queue<timer_op_handle> timers{};
     while (true) {
         // in every iteration of the run loop we will empty the local submission
-        // queue. We immediately complete ready ops and push all others into the 
+        // queue. We immediately complete ready ops and push all others into the
         // timer queue
         auto now = std::chrono::system_clock::now();
-        for (operation_base* op : submission_queue) {
-            if (op->type_ == operation_type::timer) {
-                auto timer = static_cast<timer_op_base*>(op);
+        for (std::variant<timer_base*, stop_request> op : submission_queue) {
+            if (op.index() == 0) {
+                timer_base* timer = *std::get_if<0>(&op);
                 if (timer->deadline_ <= now) {
-                    timer->set_value_(timer);
+                    timer->set_value();
                 } else {
-                    timers.push(timer_op_handle{timer});
+                    try {
+                        timers.push(timer_op_handle{timer});
+                    } catch (...) {
+                        timer->set_error(std::current_exception());
+                    }
                 }
-            } else if (op->type_ == operation_type::cancel) {
-                // 1. TODO: remove target from priority queue and complete that timer
-                // 2. complete the cancellation request
-                op->set_value_(op);
+            } else if (op.index() == 1) {
+                // TODO
             }
         }
         submission_queue.clear();
@@ -550,10 +552,10 @@ After processing the submission queue we also have to check in each iteration wh
         // After we emptied the submission queue we check whether any ready
         // timers are waiting for its completion in the timer queue
         while (!timers.empty()) {
-            timer_op_handle next = timers.top();
-            if (next.pointer_->deadline_ <= now) {
+            timer_op_handle timer = timers.top();
+            if (timer.pointer_->deadline_ <= now) {
                 timers.pop();
-                next.pointer_->set_value_(next.pointer_);
+                timer.pointer_->set_value();
             } else {
                 break;
             }
@@ -565,29 +567,25 @@ The next stop of the event loop is to enter the critical section and to decide w
 
 ```cpp
         // from here on we take a lock. no mutations from remote are possible
+        // any exception on the mutex will terminate the program
         std::unique_lock lock{mutex_};
-        if (!submission_queue_.empty()) {
-            // new submissions are available lets swap the queues and proceed from
-            // the beginning
-            std::swap(submission_queue, submission_queue_);
-            continue;
-        }
-        // no new submission... lets see whether we need to wait or quit
-        if (stop_requested && timers.empty()) {
-            // stop requested and no timers to wait for? Let's quit.
-            return;
-        } else if (stop_requested && !timers.empty()) {
-            // stop requested and we need to cancel all the remaining timers
+        if (stop_requested) {
+            // stop requested? Let's quit.
+            lock.unlock();
             while (!timers.empty()) {
-                auto next = timers.top();
+                timer_op_handle timer = timers.top();
                 timers.pop();
-                next.pointer_->run_loop_stopped_ = true;
-                next.pointer_->set_value_(next.pointer_);
+                timer.pointer_->set_stopped();
             }
-        } else if (!stop_requested && timers.empty()) {
+            return;
+        } else if (!submission_queue_.empty()) {
+            // new submissions are available lets swap the queues and
+            // proceed from the beginning
+            std::swap(submission_queue, submission_queue_);
+        } else if (timers.empty()) {
             // no stop but there are no timers? Let's wait.
             cv_.wait(lock);
-        } else if (!stop_requested && !timers.empty()) {
+        } else if (!timers.empty()) {
             // timers available? Let's wait for the next deadline.
             auto deadline = timers.top().pointer_->deadline_;
             cv_.wait_until(lock, deadline);
@@ -601,11 +599,15 @@ Lets make a very naive implementation that internally uses `std::multiset`.
 
 ```cpp
 struct timer_op_handle {
-    timer_op_base* pointer_;
+    timer_base* pointer_;
 
-    friend auto operator<(timer_op_handle lhs, timer_op_handle rhs) noexcept -> bool {
+    friend auto operator<(timer_op_handle lhs, timer_op_handle rhs) noexcept
+        -> bool {
         return lhs.pointer_->deadline_ < rhs.pointer_->deadline_;
     }
+
+    friend bool operator==(timer_op_handle lhs,
+                            timer_op_handle rhs) noexcept = default;
 };
 
 class timer_queue {
@@ -623,11 +625,11 @@ class timer_queue {
     }
 
     auto remove(timer_op_handle timer) -> bool {
-        auto pos = timers_.find(timer);
-        if (pos == timers_.end()) {
-            return false;
+        auto [first, end] = timers_.equal_range(timer);
+        auto pos = std::find(first, end, timer);
+        if (pos != end) {
+            timers_.erase(pos);
         }
-        timers_.erase(pos);
         return true;
     }
 
@@ -647,32 +649,35 @@ Next, we apply this `timer_queue` to our `run()` algorithm
 ```cpp
     // we create a local copy of a submission queue that will be processsed
     // and use a timer_queue to manage timers sorted by their deadline
-    std::vector<operation_base*> submission_queue{};
+    std::vector<std::variant<timer_base*, stop_request>> submission_queue{};
     timer_queue timers{};
     while (true) {
         // in every iteration of the run loop we will empty the local submission
-        // queue. We immediately complete ready ops and push all others into the 
+        // queue. We immediately complete ready ops and push all others into the
         // timer queue
         auto now = std::chrono::system_clock::now();
-        for (operation_base* op : submission_queue) {
-            if (op->type_ == operation_type::timer) {
-                auto timer = static_cast<timer_op_base*>(op);
+        for (std::variant<timer_base*, stop_request> op : submission_queue) {
+            if (op.index() == 0) {
+                timer_base* timer = *std::get_if<0>(&op);
                 if (timer->deadline_ <= now) {
-                    timer->set_value_(timer);
+                    timer->set_value();
                 } else {
-                    timers.push(timer_op_handle{timer});
+                    try {
+                        timers.push(timer_op_handle{timer});
+                    } catch (...) {
+                        timer->set_error(std::current_exception());
+                    }
                 }
-            } else if (op->type_ == operation_type::cancel) {
-                auto cancellation = static_cast<cancellation_op_base*>(op);
-                // if the target submission has not completed yet we make it complete
-                // now. if the target is not in the timer queue then it has already
-                // been completed.
-                // note, the cancellation submission always completes after the
-                // target submission completes.
-                if (cancellation->target && timers.remove(cancellation->target)) {
-                    cancellation->target->set_value_(cancellation->target);
+            } else if (op.index() == 1) {
+                stop_request cancellation = *std::get_if<1>(&op);
+                // if the target submission has not completed yet we make it
+                // complete now. if the target is not in the timer queue then it
+                // has already been completed. note, the cancellation submission
+                // always completes after the target submission completes.
+                if (cancellation.target &&
+                    timers.remove(timer_op_handle{cancellation.target})) {
+                    cancellation.target->set_stopped();
                 }
-                cancellation->set_value_(cancellation);
             }
         }
         submission_queue.clear();
@@ -745,71 +750,12 @@ class timed_run_loop_scheduler {
 ```
 
 I think cancellation is the most interesting and most difficult aspect of the implementation.
-Upon an incoming stop request a stop-callback will schedule another cancellation operation to the submission queue of the context.
-If this happens the whole schedule-operation will wait for both submissions, timer and its cancellation, to complete before it completes itself via the connected receiver.
-In fact, our implementation guarantees that the cancellation operation completes last as long as there is only one driving thread.
-I want to make this assumption here and leave it as an exercise to generalize cancellation to support multiple driving threads.
-
-We implement this behaviour with a "reference counter", which we call `op_count_`.
-This integer is initialized with `1` and will be set to `2` when the stop request happens.
-If the stop-callback is invoked, we delegate the responsibility to complete the connected receiver to the cancel operation because it is guaranteed to be completed second.
-Subsequent access to the reference count will be synchronized by destroying the stop-callback.
-
-The cancellation and the timer share some common state:
-
-1. the connected receiver
-2. the `op_count_`
-3. and a reference to the execution context.
-
-We place those shared objects into the operation state of the cancellation and have this as an inner object of the schedule operation state.
+Upon an incoming stop request a stop-callback will submit a `stop_request` to the submission queue of the context and sets a boolean flag.
+Subsequent access to the boolean will be synchronized by destroying the stop-callback.
 
 ```cpp
 template <class Receiver>
-struct cancel_operation : timed_run_loop::cancellation_op_base {
-    Receiver receiver_;
-    timed_run_loop& run_loop_;
-    // the op count is only increased within the stop-callback
-    // and it is decreased when the timer operation completes.
-    int op_count_{1};
-
-    static void do_set_value(void* self) noexcept {
-        static_cast<cancel_operation*>(self)->complete();
-    }
-
-    cancel_operation(Receiver receiver, timed_run_loop& run_loop,
-                      timed_run_loop::timer_op_base* target) noexcept
-        : cancellation_op_base{{do_set_value,
-                                timed_run_loop::operation_type::cancel},
-                                target},
-          receiver_{std::move(receiver)},
-          run_loop_{run_loop} {}
-
-    // this is called from within the stop-callback
-    void submit() noexcept try {
-        assert(op_count_ == 1);
-        op_count_ = 2;
-        {
-            std::lock_guard lock{run_loop_.mutex_};
-            run_loop_.submission_queue_.push_back(this);
-        }
-        // notify_one is noexcept
-        run_loop_.cv_.notify_one();
-    } catch (...) {
-        op_count_ = 1;
-    }
-
-    // this is called from within the timed_run_loop
-    void complete() noexcept {
-        // here we assume that there is only one driving thread
-        // and in that case it is guaranteed that the timer operation
-        // completes first
-        assert(op_count_ == 1);
-        stdexec::set_stopped(std::move(receiver_));
-    }
-};
-
-template <class Receiver>
-struct operation : timed_run_loop::timer_op_base {
+struct operation : timed_run_loop::timer_base {
     using operation_concept = stdexec::operation_state_t;
 
     using stop_token_type =
@@ -817,60 +763,75 @@ struct operation : timed_run_loop::timer_op_base {
 
     struct on_stop {
         operation* self;
-        void operator()() const noexcept { self->cancellation_.submit(); }
+        void operator()() const noexcept try {
+            self->stop_requested_ = true;
+            {
+                std::lock_guard lock{self->run_loop_.mutex_};
+                self->run_loop_.submission_queue_.emplace_back(
+                    timed_run_loop::stop_request{self});
+            }
+            self->run_loop_.cv_.notify_one();
+        } catch (...) {
+            // ignore stop request
+        }
     };
 
     using stop_callback =
         typename stop_token_type::template callback_type<on_stop>;
 
-    cancel_operation<Receiver> cancellation_;
-    std::optional<stop_callback> stop_callback_;
+    Receiver receiver_;
+    timed_run_loop& run_loop_;
+    bool stop_requested_{false};
+    std::optional<stop_callback> stop_callback_{};
 
-    static void do_set_value(void* pointer) noexcept {
-        auto self = static_cast<operation*>(pointer);
+    template <class CompletionFn, class... Args>
+    void do_complete(CompletionFn set_completion, Args&&... args) noexcept {
         // here we desroy the stop callback, which synchronizes with a
         // parallel call to it
-        self->stop_callback_.reset();
+        stop_callback_.reset();
         // if we reach this line then there can be no other threads that
-        // change the op_count_. 
-        // any potential modification on op_count_ happens-before we
+        // change the stop_requested_ member variable.
+        // any potential modification on stop_requested_ happens-before we
         // destroy the stop_callback
-        self->cancellation_.op_count_ -= 1;
-        if (self->cancellation_.op_count_ == 0) {
-            // op_count_ hits zero, we are responsible for completing the
-            // whole operation
-            if (self->run_loop_stopped_) {
-                stdexec::set_stopped(
-                    std::move(self->cancellation_.receiver_));
-            } else {
-                stdexec::set_value(
-                    std::move(self->cancellation_.receiver_));
-            }
+        if (stop_requested_) {
+            stdexec::set_stopped(std::move(receiver_));
+        } else {
+            set_completion(std::move(receiver_),
+                            std::forward<Args>(args)...);
         }
     }
 
+    void set_value() noexcept override { do_complete(stdexec::set_value); }
+
+    void set_stopped() noexcept override {
+        // here we destroy the callback to not trigger any unneeded submission
+        // of a stop request after the completion function is being called
+        stop_callback_.reset();
+        stdexec::set_stopped(std::move(receiver_));
+    }
+
+    void set_error(std::exception_ptr eptr) noexcept override {
+        do_complete(stdexec::set_error, std::move(eptr));
+    }
+
     operation(Receiver receiver,
-              std::chrono::system_clock::time_point deadline,
-              timed_run_loop& run_loop)
-        : timer_op_base{{do_set_value,
-                          timed_run_loop::operation_type::timer},
-                        deadline},
-          cancellation_(std::move(receiver), run_loop, this)
-        {}
+                std::chrono::system_clock::time_point deadline,
+                timed_run_loop& run_loop) noexcept
+        : timer_base{deadline},
+            receiver_{std::move(receiver)},
+            run_loop_{run_loop} {}
 
     void start() noexcept try {
-        {
-            std::lock_guard lock{cancellation_.run_loop_.mutex_};
-            cancellation_.run_loop_.submission_queue_.push_back(this);
-        }
-        // everything below is guaranteed to be noexcept
-        cancellation_.run_loop_.cv_.notify_one();
-        auto stop_token = stdexec::get_stop_token(
-              stdexec::get_env(cancellation_.receiver_));
+        auto stop_token =
+            stdexec::get_stop_token(stdexec::get_env(receiver_));
         stop_callback_.emplace(stop_token, on_stop{this});
+        {
+            std::lock_guard lock{run_loop_.mutex_};
+            run_loop_.submission_queue_.push_back(this);
+        }
+        run_loop_.cv_.notify_one();
     } catch (...) {
-        stdexec::set_error(std::move(cancellation_.receiver_),
-                            std::current_exception());
+        stdexec::set_error(std::move(receiver_), std::current_exception());
     }
 };
 ```
@@ -901,8 +862,8 @@ auto async_main(timed_run_loop_scheduler scheduler) -> stdexec::sender auto {
     auto print_after_1s = print_tid("B", scheduler.schedule_after(1s));
     return print_tid("C", exec::when_any(print_after_500ms, print_after_1s));
     // Possible output:
-    // A: This thread id: 125207094740800, duration: 500115696ns
-    // C: This thread id: 125207094740800, duration: 500217048ns
+    // A: This thread id: 127023255234368, duration: 500052479ns
+    // C: This thread id: 127023255234368, duration: 500113215ns
 }
 
 int main() {
@@ -918,7 +879,7 @@ int main() {
 }
 ```
 
-[Link to godbolt](https://godbolt.org/z/5ETKojE1T)
+[Link to godbolt](https://godbolt.org/z/q31sv1qc6)
 
 We can extend this example and use two different schedulers to have multiple threads that interact with each other through stop requests
 
@@ -946,15 +907,7 @@ auto async_main(timed_run_loop_scheduler scheduler) -> stdexec::sender auto {
     // D: This thread id: 134368219748160, duration: 100234216ns
 ```
 
-[Link to godbolt](https://godbolt.org/z/MEEvvjrv5)
-
-Finally, I want to make some notes.
-There are many ways to implement cancellation for an event loop like this.
-I also prepared a version, where the cancellation is not an operation that can be completed like presented.
-You can make it a simple command for the driving thread instead.
-The upside of making cancellation a command versus being a completable operation is that the timer operation doesn't need to wait for the completion of both, timer operation and stop command.
-The downside of that strategy is that there is potentially some left-over command in the run loop after the timer has been completed.
-[I prepared that solution here](https://godbolt.org/z/jGx8qab5o) but decided to present you with the solution above.
+[Link to godbolt](https://godbolt.org/z/5afaYKbGo)
 
 For anyone who wants to go further from here, you could take the next step towards your custom `io_run_loop`. 
 To do this, replace the condition variable with a call to `::poll` or something similar and put the appropriate deadline there.
