@@ -66,8 +66,9 @@ class timed_run_loop {
             auto pos = std::find(first, end, timer);
             if (pos != end) {
                 timers_.erase(pos);
+                return true;
             }
-            return true;
+            return false;
         }
 
         auto empty() const noexcept -> bool { return timers_.empty(); }

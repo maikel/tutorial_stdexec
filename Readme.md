@@ -629,8 +629,9 @@ class timer_queue {
         auto pos = std::find(first, end, timer);
         if (pos != end) {
             timers_.erase(pos);
+            return true;
         }
-        return true;
+        return false;
     }
 
     auto empty() const noexcept -> bool { return timers_.empty(); }
@@ -877,7 +878,7 @@ int main() {
 }
 ```
 
-[Link to godbolt](https://godbolt.org/z/q31sv1qc6)
+[Link to godbolt](https://godbolt.org/z/YhYaa1nTs)
 
 We can extend this example and use two different schedulers to have multiple threads that interact with each other through stop requests
 
@@ -905,7 +906,7 @@ auto async_main(timed_run_loop_scheduler scheduler) -> stdexec::sender auto {
     // D: This thread id: 134368219748160, duration: 100234216ns
 ```
 
-[Link to godbolt](https://godbolt.org/z/5afaYKbGo)
+[Link to godbolt](https://godbolt.org/z/zx58aqoYd)
 
 For anyone who wants to go further from here, you could take the next step towards your custom `io_run_loop`. 
 To do this, replace the condition variable with a call to `::poll` or something similar and put the appropriate deadline there.
