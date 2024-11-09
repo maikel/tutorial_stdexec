@@ -671,9 +671,7 @@ Next, we apply this `timer_queue` to our `run()` algorithm
             } else if (op.index() == 1) {
                 stop_request cancellation = *std::get_if<1>(&op);
                 // if the target submission has not completed yet we make it
-                // complete now. if the target is not in the timer queue then it
-                // has already been completed. note, the cancellation submission
-                // always completes after the target submission completes.
+                // complete now.
                 if (cancellation.target &&
                     timers.remove(timer_op_handle{cancellation.target})) {
                     cancellation.target->set_stopped();
