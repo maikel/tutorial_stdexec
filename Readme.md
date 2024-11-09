@@ -513,7 +513,7 @@ The first step in each event loop iteration is to process the submission queue a
 ```cpp
     // we create a local copy of a submission queue that will be processsed
     // and use a priority queue to manage timers sorted by their deadline
-    std::vector<operation_base*> submission_queue{};
+    std::vector<std::variant<timer_base*, stop_request>> submission_queue{};
     std::priority_queue<timer_op_handle> timers{};
     while (true) {
         // in every iteration of the run loop we will empty the local submission
