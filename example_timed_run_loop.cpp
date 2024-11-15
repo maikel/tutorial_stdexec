@@ -1,6 +1,7 @@
 #include <stdexec/execution.hpp>
 //
 #include <exec/when_any.hpp>
+#include <functional>
 #include <iostream>
 #include <set>
 
@@ -40,7 +41,9 @@ class timed_run_loop {
 
         friend auto operator<(timer_op_handle lhs, timer_op_handle rhs) noexcept
             -> bool {
-            return lhs.pointer_->deadline_ < rhs.pointer_->deadline_;
+            return (lhs.pointer_->deadline_ < rhs.pointer_->deadline_) ||
+                   (lhs.pointer_->deadline_ == rhs.pointer_->deadline_ &&
+                    std::less<>{}(lhs.pointer_, rhs.pointer_));
         }
 
         friend bool operator==(timer_op_handle lhs,
@@ -62,9 +65,8 @@ class timed_run_loop {
         }
 
         auto remove(timer_op_handle timer) -> bool {
-            auto [first, end] = timers_.equal_range(timer);
-            auto pos = std::find(first, end, timer);
-            if (pos != end) {
+            auto pos = std::find(timers_.begin(), timers_.end(), timer);
+            if (pos != timers_.end()) {
                 timers_.erase(pos);
                 return true;
             }
@@ -74,7 +76,7 @@ class timed_run_loop {
         auto empty() const noexcept -> bool { return timers_.empty(); }
 
        private:
-        std::multiset<timer_op_handle> timers_;
+        std::set<timer_op_handle> timers_;
     };
 
     // this mutex is used to synchronize with all remote threads
@@ -287,8 +289,9 @@ class timed_run_loop_scheduler {
         void set_value() noexcept override { do_complete(stdexec::set_value); }
 
         void set_stopped() noexcept override {
-            // here we destroy the callback to not trigger any unneeded submission
-            // of a stop request after the completion function is being called
+            // here we destroy the callback to not trigger any unneeded
+            // submission of a stop request after the completion function is
+            // being called
             stop_callback_.reset();
             stdexec::set_stopped(std::move(receiver_));
         }
