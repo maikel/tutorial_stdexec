@@ -181,6 +181,13 @@ struct jthread_scheduler {
         Receiver receiver_;
         std::jthread thread_;
 
+        // a better scheduler would store threads in an external execution context
+        ~operation() {
+            if (thread_.get_id() == std::this_thread::get_id()) {
+                thread_.detach();
+            }
+        }
+
         // creating a jthread might throw an exception and we need to handle
         // that
         // note how the exceptional path does not complete on a new thread
@@ -318,9 +325,14 @@ In the case where the input sender completes in-time we need to stop the timer o
 
 ## Cancellation with Stoppable Tokens
 
-Although we have `std::stop_token` available since C++20, `std::execution` generalizes this concept to accommodate more token types, such as `std::never_stop_token`, which never triggers a stop request. Stoppable tokens typically refer to a stop source and allow us to install a callback that is invoked whenever a cancellation is requested. This stop request, along with the subsequent invocation of the callback, can occur from any thread, making cancellation inherently racy and requiring extra caution.
+Although we have `std::stop_token` available since C++20, `std::execution` generalizes this concept to accommodate more token types, such as `std::never_stop_token`, which never triggers a stop request. 
+Stoppable tokens typically refer to a stop source and allow us to install a callback that is invoked whenever a cancellation is requested.
+This stop request, along with the subsequent invocation of the callback, can occur from any thread, making cancellation inherently racy and requiring extra caution.
 
-One of the key advantages of stoppable tokens is the guarantee that the invocation of a stop callback does not race with its destruction. Specifically, destroying a callback object synchronizes with any concurrent invocation of the callback. This property is essential for implementing cancellation.
+One of the key advantages of stoppable tokens is the guarantee that the invocation of a stop callback does not race with its destruction.
+Specifically, destroying a callback object synchronizes with any concurrent invocation of the callback.
+This property is essential for implementing cancellation.
+One caveat to note is that the standard specifies that we must construct a stop callback after `calling execution::start()` of an operation and destroy the callback before calling any completion function.
 
 In the following snippet, we will replace the call to `std::this_thread::sleep_until` with a call to `std::condition_variable::wait_until`, which we will interrupt from a callback whenever a stop request is received.
 
@@ -350,9 +362,8 @@ struct timed_operation {
         }
     };
 
-    // since the stop callback is the last member variable it will be
-    // destroyed first and thus it is safe to reference any other member
-    // variable
+    // We make this an optional in order to exactly control the lifetime
+    // of the callback object
     using stop_callback =
         typename stop_token_type::template callback_type<on_stop>;
     std::optional<stop_callback> stop_callback_;
@@ -370,6 +381,7 @@ struct timed_operation {
                     lock, deadline_,
                     [stop_token] { return stop_token.stop_requested(); });
                 lock.unlock();
+                stop_callback_.reset();
                 if (stop_requested) {
                     stdexec::set_stopped(std::move(receiver_));
                 } else {
@@ -800,8 +812,6 @@ struct operation : timed_run_loop::timer_base {
     void set_value() noexcept override { do_complete(stdexec::set_value); }
 
     void set_stopped() noexcept override {
-        // here we destroy the callback to not trigger any unneeded submission
-        // of a stop request after the completion function is being called
         stop_callback_.reset();
         stdexec::set_stopped(std::move(receiver_));
     }
@@ -827,6 +837,7 @@ struct operation : timed_run_loop::timer_base {
         }
         run_loop_.cv_.notify_one();
     } catch (...) {
+        stop_callback_.reset();
         stdexec::set_error(std::move(receiver_), std::current_exception());
     }
 };
